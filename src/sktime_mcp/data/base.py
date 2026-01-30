@@ -1,0 +1,105 @@
+"""
+Base adapter for data sources.
+
+Defines the interface that all data source adapters must implement.
+"""
+
+from abc import ABC, abstractmethod
+from typing import Any, Dict, Optional, Tuple
+import pandas as pd
+
+
+class DataSourceAdapter(ABC):
+    """
+    Abstract base class for all data source adapters.
+    
+    All adapters must implement:
+    - load(): Fetch data from source
+    - validate(): Check data quality
+    - to_sktime_format(): Convert to sktime-compatible format
+    """
+    
+    def __init__(self, config: Dict[str, Any]):
+        """
+        Initialize the adapter.
+        
+        Args:
+            config: Configuration dictionary specific to the adapter type
+        """
+        self.config = config
+        self._data = None
+        self._metadata = {}
+    
+    @abstractmethod
+    def load(self) -> pd.DataFrame:
+        """
+        Load data from the source.
+        
+        Returns:
+            DataFrame with time index
+        """
+        pass
+    
+    @abstractmethod
+    def validate(self, data: pd.DataFrame) -> Tuple[bool, Dict[str, Any]]:
+        """
+        Validate data quality.
+        
+        Args:
+            data: DataFrame to validate
+        
+        Returns:
+            Tuple of (is_valid, validation_report)
+            validation_report contains:
+                - valid: bool
+                - errors: List[str]
+                - warnings: List[str]
+        """
+        pass
+    
+    def to_sktime_format(self, data: pd.DataFrame) -> Tuple[pd.Series, Optional[pd.DataFrame]]:
+        """
+        Convert to sktime format (y, X).
+        
+        Args:
+            data: DataFrame to convert
+        
+        Returns:
+            Tuple of (y, X) where:
+            - y: Target time series (pd.Series with DatetimeIndex)
+            - X: Exogenous variables (pd.DataFrame, optional)
+        """
+        # Get target column from config
+        target_col = self.config.get("target_column")
+        exog_cols = self.config.get("exog_columns", [])
+        
+        if target_col and target_col in data.columns:
+            y = data[target_col]
+            
+            # Get exogenous variables if specified
+            if exog_cols:
+                valid_exog_cols = [col for col in exog_cols if col in data.columns]
+                X = data[valid_exog_cols] if valid_exog_cols else None
+            else:
+                # Use all columns except target as exogenous
+                other_cols = [col for col in data.columns if col != target_col]
+                X = data[other_cols] if other_cols else None
+        else:
+            # Default: first column is target, rest are exogenous
+            if len(data.columns) == 1:
+                y = data.iloc[:, 0]
+                X = None
+            else:
+                y = data.iloc[:, 0]
+                X = data.iloc[:, 1:]
+        
+        return y, X
+    
+    def get_metadata(self) -> Dict[str, Any]:
+        """
+        Return metadata about the data source.
+        
+        Returns:
+            Dictionary with metadata (rows, columns, frequency, etc.)
+        """
+        return self._metadata

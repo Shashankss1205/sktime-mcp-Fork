@@ -5,6 +5,10 @@ from sktime_mcp.tools.describe_estimator import describe_estimator_tool
 from sktime_mcp.tools.instantiate import instantiate_estimator_tool
 from sktime_mcp.tools.fit_predict import fit_predict_tool
 from sktime_mcp.tools.codegen import export_code_tool
+from sktime_mcp.tools.format_tools import (
+    format_time_series_tool,
+    auto_format_on_load_tool,
+)
 
 __all__ = [
     "list_estimators_tool",
@@ -12,4 +16,6 @@ __all__ = [
     "instantiate_estimator_tool",
     "fit_predict_tool",
     "export_code_tool",
+    "format_time_series_tool",
+    "auto_format_on_load_tool",
 ]

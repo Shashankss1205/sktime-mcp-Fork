@@ -36,6 +36,17 @@ from sktime_mcp.tools.fit_predict import (
     list_datasets_tool,
 )
 from sktime_mcp.tools.codegen import export_code_tool
+from sktime_mcp.tools.data_tools import (
+    load_data_source_tool,
+    list_data_sources_tool,
+    fit_predict_with_data_tool,
+    list_data_handles_tool,
+    release_data_handle_tool,
+)
+from sktime_mcp.tools.format_tools import (
+    format_time_series_tool,
+    auto_format_on_load_tool,
+)
 from sktime_mcp.composition.validator import get_composition_validator
 
 # Configure logging to stderr with detailed format
@@ -231,6 +242,111 @@ async def list_tools() -> List[Tool]:
                 "required": ["handle"],
             },
         ),
+        Tool(
+            name="load_data_source",
+            description="Load data from various sources (pandas DataFrame, SQL database, CSV/Excel/Parquet file)",
+            inputSchema={
+                "type": "object",
+                "properties": {
+                    "config": {
+                        "type": "object",
+                        "description": "Data source configuration with 'type' key (pandas, sql, file) and type-specific options",
+                    },
+                },
+                "required": ["config"],
+            },
+        ),
+        Tool(
+            name="list_data_sources",
+            description="List all available data source types and their descriptions",
+            inputSchema={"type": "object", "properties": {}},
+        ),
+        Tool(
+            name="fit_predict_with_data",
+            description="Fit an estimator and generate predictions using custom data (not demo datasets)",
+            inputSchema={
+                "type": "object",
+                "properties": {
+                    "estimator_handle": {
+                        "type": "string",
+                        "description": "Handle from instantiate_estimator",
+                    },
+                    "data_handle": {
+                        "type": "string",
+                        "description": "Handle from load_data_source",
+                    },
+                    "horizon": {
+                        "type": "integer",
+                        "description": "Forecast horizon (default: 12)",
+                        "default": 12,
+                    },
+                },
+                "required": ["estimator_handle", "data_handle"],
+            },
+        ),
+        Tool(
+            name="list_data_handles",
+            description="List all loaded data handles and their metadata",
+            inputSchema={"type": "object", "properties": {}},
+        ),
+        Tool(
+            name="release_data_handle",
+            description="Release a data handle and free memory",
+            inputSchema={
+                "type": "object",
+                "properties": {
+                    "data_handle": {
+                        "type": "string",
+                        "description": "Data handle to release",
+                    },
+                },
+                "required": ["data_handle"],
+            },
+        ),
+        Tool(
+            name="format_time_series",
+            description="Automatically format time series data (frequency, duplicates, missing values)",
+            inputSchema={
+                "type": "object",
+                "properties": {
+                    "data_handle": {
+                        "type": "string",
+                        "description": "Handle from load_data_source",
+                    },
+                    "auto_infer_freq": {
+                        "type": "boolean",
+                        "description": "Automatically infer and set frequency (default: True)",
+                        "default": True,
+                    },
+                    "fill_missing": {
+                        "type": "boolean",
+                        "description": "Fill missing values with forward/backward fill (default: True)",
+                        "default": True,
+                    },
+                    "remove_duplicates": {
+                        "type": "boolean",
+                        "description": "Remove duplicate timestamps (default: True)",
+                        "default": True,
+                    },
+                },
+                "required": ["data_handle"],
+            },
+        ),
+        Tool(
+            name="auto_format_on_load",
+            description="Enable/disable automatic formatting when loading data",
+            inputSchema={
+                "type": "object",
+                "properties": {
+                    "enabled": {
+                        "type": "boolean",
+                        "description": "Whether to enable auto-formatting (default: True)",
+                        "default": True,
+                    },
+                },
+                "required": ["enabled"],
+            },
+        ),
     ]
 
 
@@ -286,6 +402,31 @@ async def call_tool(name: str, arguments: Dict[str, Any]) -> List[TextContent]:
                 arguments.get("var_name", "model"),
                 arguments.get("include_fit_example", False),
             )
+        elif name == "load_data_source":
+            result = load_data_source_tool(arguments["config"])
+        elif name == "list_data_sources":
+            result = list_data_sources_tool()
+        elif name == "fit_predict_with_data":
+            result = fit_predict_with_data_tool(
+                arguments["estimator_handle"],
+                arguments["data_handle"],
+                arguments.get("horizon", 12),
+            )
+            # Sanitize immediately to handle Period objects
+            result = sanitize_for_json(result)
+        elif name == "list_data_handles":
+            result = list_data_handles_tool()
+        elif name == "release_data_handle":
+            result = release_data_handle_tool(arguments["data_handle"])
+        elif name == "format_time_series":
+            result = format_time_series_tool(
+                arguments["data_handle"],
+                arguments.get("auto_infer_freq", True),
+                arguments.get("fill_missing", True),
+                arguments.get("remove_duplicates", True),
+            )
+        elif name == "auto_format_on_load":
+            result = auto_format_on_load_tool(arguments["enabled"])
         else:
             result = {"error": f"Unknown tool: {name}"}
         

@@ -9,6 +9,7 @@ from typing import Any, Dict, List, Optional, Union
 import pandas as pd
 import numpy as np
 import logging
+import uuid
 
 from sktime_mcp.registry.interface import get_registry
 from sktime_mcp.runtime.handles import get_handle_manager
@@ -39,6 +40,7 @@ class Executor:
     def __init__(self):
         self._registry = get_registry()
         self._handle_manager = get_handle_manager()
+        self._data_handles = {}  # Store data handles
     
     def instantiate(
         self,
@@ -316,6 +318,301 @@ class Executor:
     def list_datasets(self) -> List[str]:
         """List available demo datasets."""
         return list(DEMO_DATASETS.keys())
+    
+    def load_data_source(self, config: Dict[str, Any]) -> Dict[str, Any]:
+        """
+        Load data from any source (pandas, SQL, file, etc.).
+        
+        Args:
+            config: Data source configuration with 'type' key
+                Examples:
+                - {"type": "pandas", "data": df, "time_column": "date", "target_column": "value"}
+                - {"type": "sql", "connection_string": "...", "query": "...", "time_column": "date"}
+                - {"type": "file", "path": "/path/to/data.csv", "time_column": "date"}
+        
+        Returns:
+            Dictionary with:
+            - success: bool
+            - data_handle: str (handle ID for the loaded data)
+            - metadata: dict (information about the data)
+            - validation: dict (validation results)
+        """
+        try:
+            from sktime_mcp.data import DataSourceRegistry
+            
+            # Create adapter
+            adapter = DataSourceRegistry.create_adapter(config)
+            
+            # Load data
+            data = adapter.load()
+            
+            # Validate
+            is_valid, validation_report = adapter.validate(data)
+            if not is_valid:
+                return {
+                    "success": False,
+                    "error": "Data validation failed",
+                    "validation": validation_report,
+                }
+            
+            # Convert to sktime format
+            y, X = adapter.to_sktime_format(data)
+            
+            # Generate handle
+            data_handle = f"data_{uuid.uuid4().hex[:8]}"
+            
+            # Store
+            self._data_handles[data_handle] = {
+                "y": y,
+                "X": X,
+                "metadata": adapter.get_metadata(),
+                "validation": validation_report,
+                "config": config,  # Store config for reference
+            }
+            
+            # Apply auto-formatting if enabled
+            if getattr(self, "_auto_format_enabled", True):
+                try:
+                    format_result = self.format_data_handle(
+                        data_handle,
+                        auto_infer_freq=True,
+                        fill_missing=True,
+                        remove_duplicates=True
+                    )
+                    if format_result["success"]:
+                        # Return the NEW handle (formatted)
+                        return {
+                            "success": True,
+                            "data_handle": format_result["data_handle"],
+                            "original_handle": data_handle,
+                            "metadata": format_result["metadata"],
+                            "validation": validation_report,
+                            "formatted": True,
+                            "changes_made": format_result["changes_made"],
+                        }
+                except Exception as e:
+                    logger.warning(f"Auto-formatting failed: {e}")
+                    # Continue with unformatted data if formatting fails
+            
+            return {
+                "success": True,
+                "data_handle": data_handle,
+                "metadata": adapter.get_metadata(),
+                "validation": validation_report,
+            }
+        
+        except Exception as e:
+            logger.exception("Error loading data source")
+            return {
+                "success": False,
+                "error": str(e),
+                "error_type": type(e).__name__,
+            }
+    
+    def format_data_handle(
+        self,
+        data_handle: str,
+        auto_infer_freq: bool = True,
+        fill_missing: bool = True,
+        remove_duplicates: bool = True,
+    ) -> Dict[str, Any]:
+        """
+        Format data associated with a handle.
+        """
+        if data_handle not in self._data_handles:
+            return {"success": False, "error": f"Data handle '{data_handle}' not found"}
+        
+        data_info = self._data_handles[data_handle]
+        y = data_info["y"].copy()
+        X = data_info["X"].copy() if data_info["X"] is not None else None
+        
+        changes_made = {
+            "frequency_set": False,
+            "duplicates_removed": 0,
+            "missing_filled": 0,
+            "gaps_filled": 0,
+        }
+        
+        # 1. Remove duplicates
+        if remove_duplicates and y.index.duplicated().any():
+            n_duplicates = y.index.duplicated().sum()
+            y = y[~y.index.duplicated(keep='first')]
+            if X is not None:
+                X = X[~X.index.duplicated(keep='first')]
+            changes_made["duplicates_removed"] = n_duplicates
+        
+        # 2. Sort by index
+        y = y.sort_index()
+        if X is not None:
+            X = X.sort_index()
+        
+        # 3. Infer and set frequency
+        if auto_infer_freq:
+            freq = y.index.freq
+            
+            if freq is None:
+                # Try to infer
+                freq = pd.infer_freq(y.index)
+                
+                if freq is None:
+                    # Manual inference
+                    time_diffs = y.index.to_series().diff().dropna()
+                    if len(time_diffs) > 0:
+                        most_common_diff = time_diffs.mode()[0]
+                        
+                        if most_common_diff == pd.Timedelta(days=1):
+                            freq = 'D'
+                        elif most_common_diff == pd.Timedelta(hours=1):
+                            freq = 'h'
+                        elif most_common_diff == pd.Timedelta(minutes=1):
+                            freq = 'min'
+                        elif most_common_diff == pd.Timedelta(seconds=1):
+                            freq = 's'
+                        elif most_common_diff == pd.Timedelta(days=7):
+                            freq = 'W'
+                        elif most_common_diff.days >= 28 and most_common_diff.days <= 31:
+                            freq = 'MS'
+                        else:
+                            freq = 'D'
+                
+                # Create complete date range
+                if freq:
+                    full_range = pd.date_range(
+                        start=y.index.min(),
+                        end=y.index.max(),
+                        freq=freq
+                    )
+                    
+                    n_gaps = len(full_range) - len(y)
+                    
+                    y = y.reindex(full_range)
+                    if X is not None:
+                        X = X.reindex(full_range)
+                    
+                    changes_made["gaps_filled"] = n_gaps
+                    changes_made["frequency_set"] = True
+                    changes_made["frequency"] = freq
+        
+        # 4. Fill missing values
+        if fill_missing and y.isna().any():
+            n_missing = y.isna().sum()
+            y = y.ffill().bfill()
+            if X is not None:
+                X = X.ffill().bfill()
+            changes_made["missing_filled"] = n_missing
+        
+        # 5. Set frequency explicitly on index
+        if hasattr(y.index, 'freq') and changes_made.get("frequency"):
+            y.index.freq = changes_made["frequency"]
+            if X is not None:
+                X.index.freq = changes_made["frequency"]
+        
+        # Generate new handle
+        new_handle = f"data_{uuid.uuid4().hex[:8]}"
+        
+        # Store formatted data
+        self._data_handles[new_handle] = {
+            "y": y,
+            "X": X,
+            "metadata": {
+                **data_info["metadata"],
+                "formatted": True,
+                "frequency": str(y.index.freq) if y.index.freq else changes_made.get("frequency"),
+                "rows": len(y),
+                "start_date": str(y.index.min()),
+                "end_date": str(y.index.max()),
+            },
+            "validation": data_info.get("validation", {}),
+            "config": data_info.get("config", {}),
+            "original_handle": data_handle,
+        }
+        
+        return {
+            "success": True,
+            "data_handle": new_handle,
+            "metadata": self._data_handles[new_handle]["metadata"],
+            "changes_made": changes_made,
+        }
+    
+    def fit_predict_with_data(
+        self,
+        estimator_handle: str,
+        data_handle: str,
+        horizon: int = 12,
+    ) -> Dict[str, Any]:
+        """
+        Fit and predict using a data handle.
+        
+        Args:
+            estimator_handle: Estimator handle from instantiate_estimator
+            data_handle: Data handle from load_data_source
+            horizon: Forecast horizon
+        
+        Returns:
+            Dictionary with predictions
+        """
+        if data_handle not in self._data_handles:
+            return {
+                "success": False,
+                "error": f"Unknown data handle: {data_handle}",
+                "available_handles": list(self._data_handles.keys()),
+            }
+        
+        data = self._data_handles[data_handle]
+        y = data["y"]
+        X = data.get("X")
+        
+        # Fit
+        fh = list(range(1, horizon + 1))
+        fit_result = self.fit(estimator_handle, y=y, X=X, fh=fh)
+        if not fit_result["success"]:
+            return fit_result
+        
+        # Predict
+        return self.predict(estimator_handle, fh=fh, X=X)
+    
+    def list_data_handles(self) -> Dict[str, Any]:
+        """
+        List all loaded data handles.
+        
+        Returns:
+            Dictionary with list of data handles and their metadata
+        """
+        handles = []
+        for handle_id, data_info in self._data_handles.items():
+            handles.append({
+                "handle": handle_id,
+                "metadata": data_info["metadata"],
+                "validation": data_info["validation"],
+            })
+        
+        return {
+            "success": True,
+            "count": len(handles),
+            "handles": handles,
+        }
+    
+    def release_data_handle(self, data_handle: str) -> Dict[str, Any]:
+        """
+        Release a data handle and free memory.
+        
+        Args:
+            data_handle: Data handle to release
+        
+        Returns:
+            Dictionary with success status
+        """
+        if data_handle in self._data_handles:
+            del self._data_handles[data_handle]
+            return {
+                "success": True,
+                "message": f"Data handle '{data_handle}' released",
+            }
+        else:
+            return {
+                "success": False,
+                "error": f"Data handle '{data_handle}' not found",
+            }
 
 
 _executor_instance: Optional[Executor] = None

@@ -53,6 +53,17 @@ dl = [
     "tensorflow>=2.9.0",
     "torch>=1.9.0",
 ]
+# SQL database support
+sql = [
+    "sqlalchemy>=2.0.0",
+    "psycopg2-binary>=2.9.0",  # PostgreSQL
+    "pymysql>=1.0.0",  # MySQL
+]
+# File format support
+files = [
+    "openpyxl>=3.0.0",  # Excel
+    "pyarrow>=10.0.0",  # Parquet
+]
 # All optional dependencies
 all = [
     "pmdarima>=2.0.0",
@@ -60,6 +71,11 @@ all = [
     "prophet>=1.1.0",
     "tbats>=1.1.0",
     "statsforecast>=1.4.0",
+    "sqlalchemy>=2.0.0",
+    "psycopg2-binary>=2.9.0",
+    "pymysql>=1.0.0",
+    "openpyxl>=3.0.0",
+    "pyarrow>=10.0.0",
 ]
 
 [project.scripts]
